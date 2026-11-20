@@ -1,61 +1,98 @@
 ﻿@model OrquideasMonitorWeb.Models.LecturaAmbiental
 @{
-    ViewData["Title"] = "Control de Orquídeas (RF1 - RF4)";
+    ViewData["Title"] = "Monitor Invernadero de Orquídeas";
     var riegos = ViewBag.Riegos as List<OrquideasMonitorWeb.Models.CalendarioRiego> ?? new();
     var sensores = ViewBag.Sensores as List<OrquideasMonitorWeb.Models.SensorDispositivo> ?? new();
+    var historial = ViewBag.Historial as List<OrquideasMonitorWeb.Models.LecturaAmbiental> ?? new();
+    int freqActual = ViewBag.FrecuenciaMinutos ?? 60;
 }
 
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" />
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
 <div class="container py-4">
-    <div class="d-flex justify-content-between align-items-center mb-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-center mb-4 gap-2">
         <div>
-            <h2 class="fw-bold text-success mb-0">🌺 Invernadero de Orquídeas (RF1 – RF4)</h2>
-            <small class="text-muted">Condiciones óptimas: Humedad ~80% | Temperatura 18°C – 24°C</small>
+            <div class="d-flex align-items-center gap-2">
+                <h2 class="fw-bold text-success mb-0">🌺 Monitoreo Climático - Orquídeas</h2>
+                <span id="badgeEstadoSensor" class="badge bg-success">🟢 Sensor en línea</span>
+            </div>
+            <small class="text-muted">Parámetros Óptimos: Humedad ~80% (75%–85%) | Temperatura 18°C – 24°C</small>
         </div>
-        <div class="d-flex gap-2">
-            <button class="btn btn-outline-success btn-sm" onclick="simularLectura(21.5, 80.0)">✅ Simular Óptimo</button>
-            <button class="btn btn-outline-danger btn-sm" onclick="simularLectura(28.0, 55.0)">⚠️ Simular Fuera de Rango</button>
+        <div class="d-flex align-items-center gap-2">
+            <button class="btn btn-outline-success btn-sm" onclick="simularLectura(21.5, 80.0, true)">✅ Simular Óptimo</button>
+            <button class="btn btn-outline-danger btn-sm" onclick="simularLectura(27.5, 58.0, true)">⚠️ Simular Alerta</button>
+            <div class="form-check form-switch ms-2">
+                <input class="form-check-input" type="checkbox" id="switchAuto" onchange="toggleSimulacionAuto(this.checked)">
+                <label class="form-check-label small fw-semibold" for="switchAuto">Sensor Virtual Auto</label>
+            </div>
         </div>
     </div>
 
-    <!-- RF2: Notificación automática de hora de riego -->
+    <!-- RF2: Notificación de hora de riego -->
     <div id="bannerRiego" class="alert alert-primary d-none shadow-sm">
-        💧 <strong>¡Recordatorio de Riego (RF2)!</strong> Es momento de regar las orquídeas. <span id="notaRiego"></span>
+        💧 <strong>¡Hora de Riego!</strong> Es momento de regar las orquídeas. <span id="notaRiego"></span>
     </div>
 
-    <!-- RF4: Excepción / Alerta si humedad o temperatura salen del rango -->
+    <!-- RF4: Alerta ambiental fuera de rango -->
     <div id="bannerAlerta" class="alert alert-danger @(Model != null && Model.FueraDeRango ? "" : "d-none") shadow-sm">
-        🚨 <strong>Alerta Ambiental (RF4):</strong> Niveles fuera del rango óptimo (Humedad 75%-85% / Temp 18°C-24°C).
+        🚨 <strong>Alerta Ambiental:</strong> Niveles fuera del rango óptimo (Humedad 75%–85% / Temp 18°C–24°C).
     </div>
 
-    <!-- RF4: Monitoreo de nivel de humedad y temperatura -->
+    <!-- RF8 & RF5: Tarjetas en Tiempo Real + Configuración de Frecuencia -->
     <div class="row g-3 mb-4">
-        <div class="col-md-6">
-            <div class="card border-0 shadow-sm text-center p-4">
-                <span class="text-muted">Nivel de Humedad del Aire (Óptimo: ~80%)</span>
-                <h1 id="txtHumedad" class="display-3 fw-bold text-info my-2">
+        <div class="col-md-4">
+            <div class="card border-0 shadow-sm text-center p-4 h-100">
+                <span class="text-muted">Humedad Relativa (Óptimo: ~80%)</span>
+                <h1 id="txtHumedad" class="display-4 fw-bold text-info my-2">
                     @(Model != null ? $"{Model.Humedad:F1}%" : "--%")
                 </h1>
-                <small class="text-muted">Última lectura: <span id="txtHora">@(Model?.FechaRegistro.ToString("HH:mm:ss") ?? "Esperando sensor...")</span></small>
+                <small class="text-muted">Actualizado: <span id="txtHora">@(Model?.FechaRegistro.ToString("HH:mm:ss") ?? "--:--")</span></small>
             </div>
         </div>
-        <div class="col-md-6">
-            <div class="card border-0 shadow-sm text-center p-4">
-                <span class="text-muted">Temperatura Ambiental (Óptimo: 18°C – 24°C)</span>
-                <h1 id="txtTemperatura" class="display-3 fw-bold text-primary my-2">
+        <div class="col-md-4">
+            <div class="card border-0 shadow-sm text-center p-4 h-100">
+                <span class="text-muted">Temperatura (Óptimo: 18°C – 24°C)</span>
+                <h1 id="txtTemperatura" class="display-4 fw-bold text-primary my-2">
                     @(Model != null ? $"{Model.Temperatura:F1}°C" : "--°C")
                 </h1>
-                <small class="text-muted">Monitoreo continuo desde sensor</small>
+                <small class="text-muted">Ciclo Noche – Día</small>
             </div>
         </div>
+        <div class="col-md-4">
+            <div class="card border-0 shadow-sm p-4 h-100">
+                <span class="text-muted fw-semibold">⏱️ Frecuencia de Registro Histórico</span>
+                <form asp-action="ActualizarFrecuencia" method="post" class="mt-2">
+                    <select name="frecuenciaMinutos" class="form-select form-select-sm mb-2">
+                        <option value="0" selected="@(freqActual == 0)">Tiempo real continuo (Pruebas)</option>
+                        <option value="1" selected="@(freqActual == 1)">Cada 1 minuto</option>
+                        <option value="15" selected="@(freqActual == 15)">Cada 15 minutos</option>
+                        <option value="30" selected="@(freqActual == 30)">Cada 30 minutos</option>
+                        <option value="60" selected="@(freqActual == 60)">Cada 1 hora (Estándar)</option>
+                    </select>
+                    <button type="submit" class="btn btn-outline-dark btn-sm w-100">Guardar Frecuencia</button>
+                </form>
+                <small class="text-muted mt-2 d-block">
+                    Configuración actual: <strong>@(freqActual == 0 ? "Continuo (0 min)" : $"Cada {freqActual} min")</strong>
+                </small>
+            </div>
+        </div>
+    </div>
+
+    <!-- RF5 & RF8: Gráfico Histórico en Tiempo Real -->
+    <div class="card border-0 shadow-sm p-4 mb-4">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <h5 class="fw-bold mb-0">📈 Histórico de Condiciones Ambientales</h5>
+            <span class="badge bg-light text-dark border">Últimos @historial.Count registros en MySQL</span>
+        </div>
+        <canvas id="graficoClima" height="85"></canvas>
     </div>
 
     <div class="row g-4">
-        <!-- RF1: Establecer Calendario de Riego -->
+        <!-- RF1: Calendario de Riego -->
         <div class="col-md-6">
             <div class="card border-0 shadow-sm p-4 h-100">
-                <h5 class="fw-bold mb-3">📅 Calendario de Riego (RF1)</h5>
+                <h5 class="fw-bold mb-3">📅 Calendario de Riego</h5>
                 <form asp-action="AgregarRiego" method="post" class="row g-2 mb-3">
                     <div class="col-5">
                         <select name="diaSemana" class="form-select form-select-sm" required>
@@ -93,13 +130,13 @@
             </div>
         </div>
 
-        <!-- RF3: Integración de Sensores de Humedad (Wi-Fi / Bluetooth) -->
+        <!-- RF3: Sensores Conectados -->
         <div class="col-md-6">
             <div class="card border-0 shadow-sm p-4 h-100">
-                <h5 class="fw-bold mb-3">📡 Conectar Sensores (RF3)</h5>
+                <h5 class="fw-bold mb-3">📡 Sensores Vinculados (Wi-Fi / Bluetooth)</h5>
                 <form asp-action="ConectarSensor" method="post" class="row g-2 mb-3">
                     <div class="col-5">
-                        <input type="text" name="nombre" class="form-control form-control-sm" placeholder="Ej: DHT22 Sector A" required />
+                        <input type="text" name="nombre" class="form-control form-control-sm" placeholder="Ej: DHT22 Nave 2" required />
                     </div>
                     <div class="col-3">
                         <select name="tipoConexion" class="form-select form-select-sm">
@@ -140,35 +177,99 @@
 </div>
 
 <script>
-    // Polling cada 3 segundos para actualizar lecturas (RF4) y notificaciones de riego (RF2)
-    setInterval(async () => {
-        const res = await fetch('/api/iot/monitoreo');
-        const data = await res.json();
+    const ordenados = @Html.Raw(Json.Serialize(historial.OrderBy(x => x.FechaRegistro).ThenBy(x => x.Id)));
+    const etiquetas = ordenados.map(x => new Date(x.fechaRegistro).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+    const datosTemp = ordenados.map(x => x.temperatura);
+    const datosHum = ordenados.map(x => x.humedad);
 
-        if (data.lectura) {
-            document.getElementById('txtHumedad').innerText = data.lectura.humedad.toFixed(1) + '%';
-            document.getElementById('txtTemperatura').innerText = data.lectura.temperatura.toFixed(1) + '°C';
-            document.getElementById('txtHora').innerText = new Date(data.lectura.fechaRegistro).toLocaleTimeString();
-
-            const alerta = document.getElementById('bannerAlerta');
-            data.lectura.fueraDeRango ? alerta.classList.remove('d-none') : alerta.classList.add('d-none');
+    const ctx = document.getElementById('graficoClima').getContext('2d');
+    const chart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: etiquetas,
+            datasets: [
+                { label: 'Temperatura (°C)', data: datosTemp, borderColor: '#0d6efd', backgroundColor: 'rgba(13, 110, 253, 0.1)', tension: 0.3, fill: true },
+                { label: 'Humedad (%)', data: datosHum, borderColor: '#0dcaf0', backgroundColor: 'rgba(13, 202, 240, 0.1)', tension: 0.3, fill: true }
+            ]
+        },
+        options: {
+            responsive: true,
+            scales: { y: { beginAtZero: false } }
         }
+    });
 
-        const riego = document.getElementById('bannerRiego');
-        if (data.esHoraDeRegar) {
-            riego.classList.remove('d-none');
-            document.getElementById('notaRiego').innerText = data.mensajeRiego;
-        } else {
-            riego.classList.add('d-none');
+    let ultimoEnvioMs = Date.now();
+
+    setInterval(async () => {
+        try {
+            const res = await fetch('/api/iot/monitoreo');
+            const data = await res.json();
+
+            if (data.lectura) {
+                const horaStr = new Date(data.lectura.fechaRegistro).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                document.getElementById('txtHumedad').innerText = data.lectura.humedad.toFixed(1) + '%';
+                document.getElementById('txtTemperatura').innerText = data.lectura.temperatura.toFixed(1) + '°C';
+                document.getElementById('txtHora').innerText = horaStr;
+
+                if (chart.data.labels[chart.data.labels.length - 1] !== horaStr) {
+                    chart.data.labels.push(horaStr);
+                    chart.data.datasets[0].data.push(data.lectura.temperatura);
+                    chart.data.datasets[1].data.push(data.lectura.humedad);
+                    if (chart.data.labels.length > 30) {
+                        chart.data.labels.shift();
+                        chart.data.datasets[0].data.shift();
+                        chart.data.datasets[1].data.shift();
+                    }
+                    chart.update();
+                }
+
+                const alerta = document.getElementById('bannerAlerta');
+                data.lectura.fueraDeRango ? alerta.classList.remove('d-none') : alerta.classList.add('d-none');
+            }
+
+            const riego = document.getElementById('bannerRiego');
+            if (data.esHoraDeRegar) {
+                riego.classList.remove('d-none');
+                document.getElementById('notaRiego').innerText = data.mensajeRiego;
+            } else {
+                riego.classList.add('d-none');
+            }
+
+            // Control visual de desconexión si no hay transmisión activa en modo auto
+            const badge = document.getElementById('badgeEstadoSensor');
+            if (document.getElementById('switchAuto').checked || (Date.now() - ultimoEnvioMs < 10000)) {
+                badge.className = 'badge bg-success';
+                badge.innerText = '🟢 Sensor en línea';
+            } else {
+                badge.className = 'badge bg-warning text-dark';
+                badge.innerText = '🟡 En espera de transmisión';
+            }
+        } catch (e) {
+            const badge = document.getElementById('badgeEstadoSensor');
+            badge.className = 'badge bg-danger';
+            badge.innerText = '🔴 Sin conexión al servidor';
         }
     }, 3000);
 
-    // Función de prueba para simular envío desde el sensor
-    async function simularLectura(temp, hum) {
-        await fetch('/api/iot/lectura', {
+    async function simularLectura(temp, hum, forzar = false) {
+        ultimoEnvioMs = Date.now();
+        await fetch(`/api/iot/lectura?forzar=${forzar}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ sensorId: 1, temperatura: temp, humedad: hum })
         });
+    }
+
+    let intervaloAuto = null;
+    function toggleSimulacionAuto(activo) {
+        if (activo) {
+            intervaloAuto = setInterval(() => {
+                const temp = (Math.random() * (23.8 - 18.5) + 18.5).toFixed(1);
+                const hum = (Math.random() * (84.0 - 76.0) + 76.0).toFixed(1);
+                simularLectura(parseFloat(temp), parseFloat(hum), false);
+            }, 4000);
+        } else {
+            clearInterval(intervaloAuto);
+        }
     }
 </script>

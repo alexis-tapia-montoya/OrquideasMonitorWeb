@@ -1,125 +1,257 @@
 ﻿using Microsoft.AspNetCore.Mvc;
+using MySqlConnector;
 using OrquideasMonitorWeb.Models;
 
 namespace OrquideasMonitorWeb.Controllers
 {
     public class InvernaderoController : Controller
     {
-        // Almacenamiento temporal en memoria (sin base de datos por ahora)
-        private static List<CalendarioRiego> _riegos = new();
-        private static List<SensorDispositivo> _sensores = new()
-        {
-            new SensorDispositivo
-            {
-                Id = 1,
-                Nombre = "Sensor Principal DHT22",
-                TipoConexion = "Wi-Fi",
-                MacOIp = "192.168.1.50",
-                Conectado = true,
-                UltimaConexion = DateTime.Now
-            }
-        };
-        private static LecturaAmbiental? _ultimaLectura = new()
-        {
-            Id = 1,
-            SensorId = 1,
-            Temperatura = 21.0,
-            Humedad = 80.0,
-            FechaRegistro = DateTime.Now,
-            FueraDeRango = false
-        };
+        private readonly string _connectionString;
 
-        // Vista principal: RF1 (Calendario), RF3 (Sensores) y RF4 (Monitoreo actual)
-        public IActionResult Index()
+        public InvernaderoController(IConfiguration configuration)
         {
-            ViewBag.Riegos = _riegos.Where(r => r.Activo).OrderBy(r => r.HoraRiego).ToList();
-            ViewBag.Sensores = _sensores;
-            return View(_ultimaLectura);
+            _connectionString = configuration.GetConnectionString("DefaultConnection")!;
+        }
+
+        // Vista principal: RF1 al RF8 integrados con MySQL
+        public async Task<IActionResult> Index()
+        {
+            var riegos = new List<CalendarioRiego>();
+            var sensores = new List<SensorDispositivo>();
+            var historial = new List<LecturaAmbiental>();
+            int frecuenciaMinutos = 60;
+
+            using var conn = new MySqlConnection(_connectionString);
+            await conn.OpenAsync();
+
+            // RF1: Cargar calendario de riego
+            using (var cmd = new MySqlCommand("SELECT * FROM CalendarioRiego WHERE Activo = 1 ORDER BY HoraRiego ASC", conn))
+            using (var reader = await cmd.ExecuteReaderAsync())
+            {
+                while (await reader.ReadAsync())
+                {
+                    riegos.Add(new CalendarioRiego
+                    {
+                        Id = reader.GetInt32("Id"),
+                        DiaSemana = reader.GetString("DiaSemana"),
+                        HoraRiego = reader.GetTimeSpan("HoraRiego"),
+                        Notas = reader.IsDBNull(reader.GetOrdinal("Notas")) ? "" : reader.GetString("Notas"),
+                        Activo = reader.GetBoolean("Activo")
+                    });
+                }
+            }
+
+            // RF3: Cargar sensores vinculados
+            using (var cmd = new MySqlCommand("SELECT * FROM Sensores", conn))
+            using (var reader = await cmd.ExecuteReaderAsync())
+            {
+                while (await reader.ReadAsync())
+                {
+                    sensores.Add(new SensorDispositivo
+                    {
+                        Id = reader.GetInt32("Id"),
+                        Nombre = reader.GetString("Nombre"),
+                        TipoConexion = reader.GetString("TipoConexion"),
+                        MacOIp = reader.GetString("MacOIp"),
+                        Conectado = reader.GetBoolean("Conectado"),
+                        UltimaConexion = reader.GetDateTime("UltimaConexion")
+                    });
+                }
+            }
+
+            // RF5, RF6 & RF8: Cargar últimas 30 lecturas históricas para gráfico y lectura actual
+            using (var cmd = new MySqlCommand("SELECT * FROM LecturasAmbientales ORDER BY FechaRegistro DESC, Id DESC LIMIT 30", conn))
+            using (var reader = await cmd.ExecuteReaderAsync())
+            {
+                while (await reader.ReadAsync())
+                {
+                    historial.Add(new LecturaAmbiental
+                    {
+                        Id = reader.GetInt32("Id"),
+                        SensorId = reader.GetInt32("SensorId"),
+                        Temperatura = reader.GetDouble("Temperatura"),
+                        Humedad = reader.GetDouble("Humedad"),
+                        FechaRegistro = reader.GetDateTime("FechaRegistro"),
+                        FueraDeRango = reader.GetBoolean("FueraDeRango")
+                    });
+                }
+            }
+
+            // RF5: Obtener frecuencia histórica configurada
+            using (var cmd = new MySqlCommand("SELECT FrecuenciaMinutos FROM ConfiguracionSistema WHERE Id = 1", conn))
+            {
+                var res = await cmd.ExecuteScalarAsync();
+                if (res != null) frecuenciaMinutos = Convert.ToInt32(res);
+            }
+
+            ViewBag.Riegos = riegos;
+            ViewBag.Sensores = sensores;
+            ViewBag.Historial = historial;
+            ViewBag.FrecuenciaMinutos = frecuenciaMinutos;
+
+            return View(historial.FirstOrDefault());
         }
 
         // RF1: Guardar nuevo horario de riego
         [HttpPost]
-        public IActionResult AgregarRiego(string diaSemana, TimeSpan horaRiego, string notas)
+        public async Task<IActionResult> AgregarRiego(string diaSemana, TimeSpan horaRiego, string notas)
         {
-            _riegos.Add(new CalendarioRiego
-            {
-                Id = _riegos.Count + 1,
-                DiaSemana = diaSemana,
-                HoraRiego = horaRiego,
-                Notas = notas ?? "",
-                Activo = true
-            });
+            using var conn = new MySqlConnection(_connectionString);
+            await conn.OpenAsync();
+
+            var sql = "INSERT INTO CalendarioRiego (DiaSemana, HoraRiego, Notas, Activo) VALUES (@dia, @hora, @notas, 1)";
+            using var cmd = new MySqlCommand(sql, conn);
+            cmd.Parameters.AddWithValue("@dia", diaSemana);
+            cmd.Parameters.AddWithValue("@hora", horaRiego);
+            cmd.Parameters.AddWithValue("@notas", notas ?? "");
+            await cmd.ExecuteNonQueryAsync();
 
             return RedirectToAction("Index");
         }
 
         // RF1: Eliminar horario de riego
         [HttpPost]
-        public IActionResult EliminarRiego(int id)
+        public async Task<IActionResult> EliminarRiego(int id)
         {
-            var riego = _riegos.FirstOrDefault(r => r.Id == id);
-            if (riego != null)
-            {
-                _riegos.Remove(riego);
-            }
+            using var conn = new MySqlConnection(_connectionString);
+            await conn.OpenAsync();
+
+            using var cmd = new MySqlCommand("DELETE FROM CalendarioRiego WHERE Id = @id", conn);
+            cmd.Parameters.AddWithValue("@id", id);
+            await cmd.ExecuteNonQueryAsync();
 
             return RedirectToAction("Index");
         }
 
         // RF3: Emparejar/Conectar sensor Wi-Fi o Bluetooth
         [HttpPost]
-        public IActionResult ConectarSensor(string nombre, string tipoConexion, string macOIp)
+        public async Task<IActionResult> ConectarSensor(string nombre, string tipoConexion, string macOIp)
         {
-            _sensores.Add(new SensorDispositivo
-            {
-                Id = _sensores.Count + 1,
-                Nombre = nombre,
-                TipoConexion = tipoConexion,
-                MacOIp = macOIp,
-                Conectado = true,
-                UltimaConexion = DateTime.Now
-            });
+            using var conn = new MySqlConnection(_connectionString);
+            await conn.OpenAsync();
+
+            var sql = "INSERT INTO Sensores (Nombre, TipoConexion, MacOIp, Conectado, UltimaConexion) VALUES (@nombre, @tipo, @mac, 1, NOW())";
+            using var cmd = new MySqlCommand(sql, conn);
+            cmd.Parameters.AddWithValue("@nombre", nombre);
+            cmd.Parameters.AddWithValue("@tipo", tipoConexion);
+            cmd.Parameters.AddWithValue("@mac", macOIp);
+            await cmd.ExecuteNonQueryAsync();
 
             return RedirectToAction("Index");
         }
 
-        // RF4: Endpoint que recibe datos del sensor o del botón simulador
+        // RF5: Guardar frecuencia de registro histórico seleccionada por el usuario
+        [HttpPost]
+        public async Task<IActionResult> ActualizarFrecuencia(int frecuenciaMinutos)
+        {
+            using var conn = new MySqlConnection(_connectionString);
+            await conn.OpenAsync();
+
+            using var cmd = new MySqlCommand("UPDATE ConfiguracionSistema SET FrecuenciaMinutos = @freq WHERE Id = 1", conn);
+            cmd.Parameters.AddWithValue("@freq", frecuenciaMinutos);
+            await cmd.ExecuteNonQueryAsync();
+
+            return RedirectToAction("Index");
+        }
+
+        // RF4, RF5 & RF7: Recibir lectura del sensor y almacenar en MySQL respetando frecuencia o alerta crítica
         [HttpPost]
         [Route("api/iot/lectura")]
-        public IActionResult RecibirLectura([FromBody] LecturaAmbiental datos)
+        public async Task<IActionResult> RecibirLectura([FromBody] LecturaAmbiental datos, [FromQuery] bool forzar = false)
         {
-            // Validar rangos óptimos de orquídeas: Humedad ~80% (75%-85%) y Temp 18°C - 24°C
             bool fueraDeRango = (datos.Temperatura < 18.0 || datos.Temperatura > 24.0) ||
                                 (datos.Humedad < 75.0 || datos.Humedad > 85.0);
 
-            _ultimaLectura = new LecturaAmbiental
-            {
-                Id = (_ultimaLectura?.Id ?? 0) + 1,
-                SensorId = datos.SensorId == 0 ? 1 : datos.SensorId,
-                Temperatura = datos.Temperatura,
-                Humedad = datos.Humedad,
-                FechaRegistro = DateTime.Now,
-                FueraDeRango = fueraDeRango
-            };
+            int sensorId = datos.SensorId == 0 ? 1 : datos.SensorId;
 
-            return Ok(new { ok = true, fueraDeRango });
+            using var conn = new MySqlConnection(_connectionString);
+            await conn.OpenAsync();
+
+            // Actualizar marca de conexión del sensor
+            using (var cmdSensor = new MySqlCommand("UPDATE Sensores SET Conectado = 1, UltimaConexion = NOW() WHERE Id = @id", conn))
+            {
+                cmdSensor.Parameters.AddWithValue("@id", sensorId);
+                await cmdSensor.ExecuteNonQueryAsync();
+            }
+
+            // Consultar frecuencia configurada y última fecha guardada
+            int freqMin = 60;
+            using (var cmdFreq = new MySqlCommand("SELECT FrecuenciaMinutos FROM ConfiguracionSistema WHERE Id = 1", conn))
+            {
+                var res = await cmdFreq.ExecuteScalarAsync();
+                if (res != null) freqMin = Convert.ToInt32(res);
+            }
+
+            DateTime? ultimaFecha = null;
+            using (var cmdLast = new MySqlCommand("SELECT FechaRegistro FROM LecturasAmbientales ORDER BY FechaRegistro DESC, Id DESC LIMIT 1", conn))
+            {
+                var res = await cmdLast.ExecuteScalarAsync();
+                if (res != null && res != DBNull.Value) ultimaFecha = Convert.ToDateTime(res);
+            }
+
+            // Guardar si es simulación manual (forzar), si hay alerta fuera de rango, o si ya transcurrió la frecuencia elegida
+            bool correspondeGuardar = forzar || fueraDeRango || ultimaFecha == null ||
+                                      (DateTime.Now - ultimaFecha.Value).TotalMinutes >= freqMin;
+
+            if (correspondeGuardar)
+            {
+                var sql = @"INSERT INTO LecturasAmbientales (SensorId, Temperatura, Humedad, FechaRegistro, FueraDeRango) 
+                            VALUES (@sensorId, @temp, @hum, NOW(), @alerta)";
+                using var cmd = new MySqlCommand(sql, conn);
+                cmd.Parameters.AddWithValue("@sensorId", sensorId);
+                cmd.Parameters.AddWithValue("@temp", datos.Temperatura);
+                cmd.Parameters.AddWithValue("@hum", datos.Humedad);
+                cmd.Parameters.AddWithValue("@alerta", fueraDeRango);
+                await cmd.ExecuteNonQueryAsync();
+            }
+
+            return Ok(new { ok = true, fueraDeRango, guardadoEnBd = correspondeGuardar });
         }
 
-        // RF2 & RF4: Consulta en vivo para notificaciones de riego y alertas climáticas
+        // RF2 & RF8: Monitoreo en tiempo real
         [HttpGet]
         [Route("api/iot/monitoreo")]
-        public IActionResult MonitoreoEnVivo()
+        public async Task<IActionResult> MonitoreoEnVivo()
         {
-            var ahora = DateTime.Now;
-            var riegoActual = _riegos.FirstOrDefault(r =>
-                r.Activo && r.HoraRiego.Hours == ahora.Hour && r.HoraRiego.Minutes == ahora.Minute);
+            using var conn = new MySqlConnection(_connectionString);
+            await conn.OpenAsync();
 
-            return Ok(new
+            LecturaAmbiental? lectura = null;
+            using (var cmd = new MySqlCommand("SELECT * FROM LecturasAmbientales ORDER BY FechaRegistro DESC, Id DESC LIMIT 1", conn))
+            using (var reader = await cmd.ExecuteReaderAsync())
             {
-                lectura = _ultimaLectura,
-                esHoraDeRegar = riegoActual != null,
-                mensajeRiego = riegoActual?.Notas ?? ""
-            });
+                if (await reader.ReadAsync())
+                {
+                    lectura = new LecturaAmbiental
+                    {
+                        Temperatura = reader.GetDouble("Temperatura"),
+                        Humedad = reader.GetDouble("Humedad"),
+                        FechaRegistro = reader.GetDateTime("FechaRegistro"),
+                        FueraDeRango = reader.GetBoolean("FueraDeRango")
+                    };
+                }
+            }
+
+            var ahora = DateTime.Now;
+            bool esHoraDeRegar = false;
+            string mensajeRiego = "";
+
+            using (var cmdRiego = new MySqlCommand("SELECT HoraRiego, Notas FROM CalendarioRiego WHERE Activo = 1", conn))
+            using (var reader = await cmdRiego.ExecuteReaderAsync())
+            {
+                while (await reader.ReadAsync())
+                {
+                    var hora = reader.GetTimeSpan("HoraRiego");
+                    if (hora.Hours == ahora.Hour && hora.Minutes == ahora.Minute)
+                    {
+                        esHoraDeRegar = true;
+                        mensajeRiego = reader.GetString("Notas");
+                        break;
+                    }
+                }
+            }
+
+            return Ok(new { lectura, esHoraDeRegar, mensajeRiego });
         }
     }
 }
