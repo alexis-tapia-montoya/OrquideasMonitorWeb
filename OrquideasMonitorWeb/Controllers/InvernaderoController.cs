@@ -1,9 +1,11 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
 using MySqlConnector;
 using OrquideasMonitorWeb.Models;
 
 namespace OrquideasMonitorWeb.Controllers
 {
+    [Authorize]
     public class InvernaderoController : Controller
     {
         private readonly string _connectionString;
@@ -84,6 +86,26 @@ namespace OrquideasMonitorWeb.Controllers
                 if (res != null) frecuenciaMinutos = Convert.ToInt32(res);
             }
 
+            // Administración de usuarios (solo si el usuario autenticado es admin)
+            var usuariosSistema = new List<dynamic>();
+            if (User.FindFirst("Usuario")?.Value == "admin")
+            {
+                using var cmdUsers = new MySqlCommand(
+                    "SELECT Id, NombreCompleto, Usuario, (DescriptorFacial IS NOT NULL) AS TieneRostro FROM Usuarios WHERE Activo = 1 ORDER BY Id ASC", conn);
+                using var readerUsers = await cmdUsers.ExecuteReaderAsync();
+                while (await readerUsers.ReadAsync())
+                {
+                    usuariosSistema.Add(new
+                    {
+                        Id = readerUsers.GetInt32("Id"),
+                        NombreCompleto = readerUsers.GetString("NombreCompleto"),
+                        Usuario = readerUsers.GetString("Usuario"),
+                        TieneRostro = readerUsers.GetBoolean("TieneRostro")
+                    });
+                }
+            }
+
+            ViewBag.Usuarios = usuariosSistema;
             ViewBag.Riegos = riegos;
             ViewBag.Sensores = sensores;
             ViewBag.Historial = historial;
@@ -154,7 +176,8 @@ namespace OrquideasMonitorWeb.Controllers
             return RedirectToAction("Index");
         }
 
-        // RF4, RF5 & RF7: Recibir lectura del sensor y almacenar en MySQL respetando frecuencia o alerta crítica
+        // RF4, RF5 & RF7: Recibir lectura del sensor ESP32 (Wokwi) y almacenar en MySQL
+        [AllowAnonymous]
         [HttpPost]
         [Route("api/iot/lectura")]
         public async Task<IActionResult> RecibirLectura([FromBody] LecturaAmbiental datos, [FromQuery] bool forzar = false)
@@ -224,6 +247,7 @@ namespace OrquideasMonitorWeb.Controllers
                 {
                     lectura = new LecturaAmbiental
                     {
+                        Id = reader.GetInt32("Id"),
                         Temperatura = reader.GetDouble("Temperatura"),
                         Humedad = reader.GetDouble("Humedad"),
                         FechaRegistro = reader.GetDateTime("FechaRegistro"),
@@ -251,7 +275,18 @@ namespace OrquideasMonitorWeb.Controllers
                 }
             }
 
-            return Ok(new { lectura, esHoraDeRegar, mensajeRiego });
+            var estadosSensores = new List<object>();
+            using (var cmdSen = new MySqlCommand("SELECT Id, TIMESTAMPDIFF(SECOND, UltimaConexion, NOW()) AS SegundosInactivo FROM Sensores", conn))
+            using (var readerSen = await cmdSen.ExecuteReaderAsync())
+            {
+                while (await readerSen.ReadAsync())
+                {
+                    int seg = readerSen.IsDBNull(1) ? 9999 : readerSen.GetInt32(1);
+                    estadosSensores.Add(new { id = readerSen.GetInt32(0), enLinea = seg <= 20 });
+                }
+            }
+
+            return Ok(new { lectura, esHoraDeRegar, mensajeRiego, estadosSensores });
         }
     }
 }

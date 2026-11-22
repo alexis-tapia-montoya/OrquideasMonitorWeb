@@ -19,13 +19,10 @@
             </div>
             <small class="text-muted">Parámetros Óptimos: Humedad ~80% (75%–85%) | Temperatura 18°C – 24°C</small>
         </div>
-        <div class="d-flex align-items-center gap-2">
-            <button class="btn btn-outline-success btn-sm" onclick="simularLectura(21.5, 80.0, true)">✅ Simular Óptimo</button>
-            <button class="btn btn-outline-danger btn-sm" onclick="simularLectura(27.5, 58.0, true)">⚠️ Simular Alerta</button>
-            <div class="form-check form-switch ms-2">
-                <input class="form-check-input" type="checkbox" id="switchAuto" onchange="toggleSimulacionAuto(this.checked)">
-                <label class="form-check-label small fw-semibold" for="switchAuto">Sensor Virtual Auto</label>
-            </div>
+        <div class="d-flex flex-wrap align-items-center gap-2">
+            <form id="formLogout" asp-controller="Account" asp-action="Logout" method="post" class="m-0">
+                <button type="submit" class="btn btn-danger btn-sm">🚪 Cerrar Sesión (@User.Identity?.Name)</button>
+            </form>
         </div>
     </div>
 
@@ -64,7 +61,6 @@
                 <span class="text-muted fw-semibold">⏱️ Frecuencia de Registro Histórico</span>
                 <form asp-action="ActualizarFrecuencia" method="post" class="mt-2">
                     <select name="frecuenciaMinutos" class="form-select form-select-sm mb-2">
-                        <option value="0" selected="@(freqActual == 0)">Tiempo real continuo (Pruebas)</option>
                         <option value="1" selected="@(freqActual == 1)">Cada 1 minuto</option>
                         <option value="15" selected="@(freqActual == 15)">Cada 15 minutos</option>
                         <option value="30" selected="@(freqActual == 30)">Cada 30 minutos</option>
@@ -73,7 +69,7 @@
                     <button type="submit" class="btn btn-outline-dark btn-sm w-100">Guardar Frecuencia</button>
                 </form>
                 <small class="text-muted mt-2 d-block">
-                    Configuración actual: <strong>@(freqActual == 0 ? "Continuo (0 min)" : $"Cada {freqActual} min")</strong>
+                    Configuración actual: <strong>Cada @freqActual min</strong>
                 </small>
             </div>
         </div>
@@ -163,10 +159,15 @@
                     <tbody>
                         @foreach (var s in sensores)
                         {
+                            bool activo = (DateTime.Now - s.UltimaConexion).TotalSeconds <= 20;
                             <tr>
                                 <td>@s.Nombre <br /><small class="text-muted">@s.MacOIp</small></td>
                                 <td><span class="badge bg-secondary">@s.TipoConexion</span></td>
-                                <td><span class="badge bg-success">Conectado</span></td>
+                                <td>
+                                    <span id="sensor-estado-@s.Id" class="badge @(activo ? "bg-success" : "bg-secondary")">
+                                        @(activo ? "Conectado" : "Desconectado")
+                                    </span>
+                                </td>
                             </tr>
                         }
                     </tbody>
@@ -174,6 +175,87 @@
             </div>
         </div>
     </div>
+
+    <!-- Administración de Usuarios (Exclusivo Admin) -->
+    @if (User.FindFirst("Usuario")?.Value == "admin")
+    {
+        var usuarios = ViewBag.Usuarios as IEnumerable<dynamic> ?? Enumerable.Empty<dynamic>();
+        <div class="card border-0 shadow-sm p-4 mt-4">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h5 class="fw-bold mb-0">👥 Administración de Usuarios (Exclusivo Admin)</h5>
+                <span class="badge bg-dark">Rol: Administrador</span>
+            </div>
+
+            @if (TempData["MensajeAdmin"] != null)
+            {
+                <div class="alert alert-success py-2 small">@TempData["MensajeAdmin"]</div>
+            }
+            @if (TempData["ErrorAdmin"] != null)
+            {
+                <div class="alert alert-danger py-2 small">@TempData["ErrorAdmin"]</div>
+            }
+
+            <form asp-controller="Account" asp-action="CrearUsuario" method="post" class="row g-2 mb-3">
+                <div class="col-md-4">
+                    <input type="text" name="nombreCompleto" class="form-control form-control-sm" placeholder="Nombre completo (ej: Juan Pérez)" required />
+                </div>
+                <div class="col-md-3">
+                    <input type="text" name="usuario" class="form-control form-control-sm" placeholder="Usuario (ej: jperez)" required />
+                </div>
+                <div class="col-md-3">
+                    <input type="password" name="password" class="form-control form-control-sm" placeholder="Contraseña inicial" required />
+                </div>
+                <div class="col-md-2">
+                    <button type="submit" class="btn btn-primary btn-sm w-100">+ Crear Usuario</button>
+                </div>
+            </form>
+
+            <div class="table-responsive">
+                <table class="table table-sm align-middle mb-0">
+                    <thead>
+                        <tr>
+                            <th>Nombre</th>
+                            <th>Usuario</th>
+                            <th>Biometría Facial</th>
+                            <th class="text-end">Acción</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var u in usuarios)
+                        {
+                            <tr>
+                                <td>@u.NombreCompleto</td>
+                                <td><code>@u.Usuario</code></td>
+                                <td>
+                                    @if (u.TieneRostro)
+                                    {
+                                        <span class="badge bg-success">📷 Rostro vinculado</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="badge bg-warning text-dark">⏳ Sin rostro registrado</span>
+                                    }
+                                </td>
+                                <td class="text-end">
+                                    @if (u.Usuario != "admin")
+                                    {
+                                        <form asp-controller="Account" asp-action="EliminarUsuario" method="post" class="m-0 d-inline">
+                                            <input type="hidden" name="id" value="@u.Id" />
+                                            <button type="submit" class="btn btn-outline-danger btn-sm">Eliminar</button>
+                                        </form>
+                                    }
+                                    else
+                                    {
+                                        <small class="text-muted">Principal</small>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    }
 </div>
 
 <script>
@@ -199,6 +281,7 @@
     });
 
     let ultimoEnvioMs = Date.now();
+    let ultimaLecturaId = @(Model?.Id ?? 0);
 
     setInterval(async () => {
         try {
@@ -206,6 +289,11 @@
             const data = await res.json();
 
             if (data.lectura) {
+                if (data.lectura.id && data.lectura.id !== ultimaLecturaId) {
+                    ultimaLecturaId = data.lectura.id;
+                    ultimoEnvioMs = Date.now();
+                }
+
                 const horaStr = new Date(data.lectura.fechaRegistro).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
                 document.getElementById('txtHumedad').innerText = data.lectura.humedad.toFixed(1) + '%';
                 document.getElementById('txtTemperatura').innerText = data.lectura.temperatura.toFixed(1) + '°C';
@@ -235,9 +323,18 @@
                 riego.classList.add('d-none');
             }
 
-            // Control visual de desconexión si no hay transmisión activa en modo auto
+            if (data.estadosSensores) {
+                data.estadosSensores.forEach(s => {
+                    const el = document.getElementById(`sensor-estado-${s.id}`);
+                    if (el) {
+                        el.className = s.enLinea ? 'badge bg-success' : 'badge bg-secondary';
+                        el.innerText = s.enLinea ? 'Conectado' : 'Desconectado';
+                    }
+                });
+            }
+
             const badge = document.getElementById('badgeEstadoSensor');
-            if (document.getElementById('switchAuto').checked || (Date.now() - ultimoEnvioMs < 10000)) {
+            if (Date.now() - ultimoEnvioMs < 15000) {
                 badge.className = 'badge bg-success';
                 badge.innerText = '🟢 Sensor en línea';
             } else {
@@ -251,25 +348,20 @@
         }
     }, 3000);
 
-    async function simularLectura(temp, hum, forzar = false) {
-        ultimoEnvioMs = Date.now();
-        await fetch(`/api/iot/lectura?forzar=${forzar}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sensorId: 1, temperatura: temp, humedad: hum })
-        });
+    // Cierre de sesión automático por inactividad (3 minutos = 180000 ms)
+    const TIEMPO_INACTIVIDAD_MS = 3 * 60 * 1000;
+    let temporizadorInactividad;
+
+    function reiniciarTemporizadorInactividad() {
+        clearTimeout(temporizadorInactividad);
+        temporizadorInactividad = setTimeout(() => {
+            document.getElementById('formLogout').submit();
+        }, TIEMPO_INACTIVIDAD_MS);
     }
 
-    let intervaloAuto = null;
-    function toggleSimulacionAuto(activo) {
-        if (activo) {
-            intervaloAuto = setInterval(() => {
-                const temp = (Math.random() * (23.8 - 18.5) + 18.5).toFixed(1);
-                const hum = (Math.random() * (84.0 - 76.0) + 76.0).toFixed(1);
-                simularLectura(parseFloat(temp), parseFloat(hum), false);
-            }, 4000);
-        } else {
-            clearInterval(intervaloAuto);
-        }
-    }
+    ['mousemove', 'mousedown', 'keydown', 'scroll', 'touchstart'].forEach(evento => {
+        document.addEventListener(evento, reiniciarTemporizadorInactividad, true);
+    });
+
+    reiniciarTemporizadorInactividad();
 </script>
