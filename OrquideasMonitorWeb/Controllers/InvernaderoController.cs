@@ -15,6 +15,23 @@ namespace OrquideasMonitorWeb.Controllers
             _connectionString = configuration.GetConnectionString("DefaultConnection")!;
         }
 
+        private static DateTime ObtenerHoraChile()
+        {
+            string[] idsZona = { "America/Santiago", "Pacific SA Standard Time" };
+            foreach (var id in idsZona)
+            {
+                try
+                {
+                    var zona = TimeZoneInfo.FindSystemTimeZoneById(id);
+                    return TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, zona);
+                }
+                catch (TimeZoneNotFoundException) { }
+                catch (InvalidTimeZoneException) { }
+            }
+
+            return DateTime.UtcNow.AddHours(-3);
+        }
+
         // Vista principal: RF1 al RF8 integrados con MySQL
         public async Task<IActionResult> Index()
         {
@@ -128,6 +145,7 @@ namespace OrquideasMonitorWeb.Controllers
             cmd.Parameters.AddWithValue("@notas", notas ?? "");
             await cmd.ExecuteNonQueryAsync();
 
+            TempData["MensajeRiego"] = $"Horario guardado ({diaSemana} a las {horaRiego:hh\\:mm}).";
             return RedirectToAction("Index");
         }
 
@@ -142,6 +160,7 @@ namespace OrquideasMonitorWeb.Controllers
             cmd.Parameters.AddWithValue("@id", id);
             await cmd.ExecuteNonQueryAsync();
 
+            TempData["MensajeRiego"] = "Horario de riego eliminado.";
             return RedirectToAction("Index");
         }
 
@@ -186,6 +205,7 @@ namespace OrquideasMonitorWeb.Controllers
                                 (datos.Humedad < 75.0 || datos.Humedad > 85.0);
 
             int sensorId = datos.SensorId == 0 ? 1 : datos.SensorId;
+            DateTime ahoraChile = ObtenerHoraChile();
 
             using var conn = new MySqlConnection(_connectionString);
             await conn.OpenAsync();
@@ -214,16 +234,17 @@ namespace OrquideasMonitorWeb.Controllers
 
             // Guardar si es simulación manual (forzar), si hay alerta fuera de rango, o si ya transcurrió la frecuencia elegida
             bool correspondeGuardar = forzar || fueraDeRango || ultimaFecha == null ||
-                                      (DateTime.Now - ultimaFecha.Value).TotalMinutes >= freqMin;
+                                      (ahoraChile - ultimaFecha.Value).TotalMinutes >= freqMin;
 
             if (correspondeGuardar)
             {
                 var sql = @"INSERT INTO LecturasAmbientales (SensorId, Temperatura, Humedad, FechaRegistro, FueraDeRango) 
-                            VALUES (@sensorId, @temp, @hum, NOW(), @alerta)";
+                            VALUES (@sensorId, @temp, @hum, @fecha, @alerta)";
                 using var cmd = new MySqlCommand(sql, conn);
                 cmd.Parameters.AddWithValue("@sensorId", sensorId);
                 cmd.Parameters.AddWithValue("@temp", datos.Temperatura);
                 cmd.Parameters.AddWithValue("@hum", datos.Humedad);
+                cmd.Parameters.AddWithValue("@fecha", ahoraChile);
                 cmd.Parameters.AddWithValue("@alerta", fueraDeRango);
                 await cmd.ExecuteNonQueryAsync();
             }
@@ -256,7 +277,7 @@ namespace OrquideasMonitorWeb.Controllers
                 }
             }
 
-            var ahora = DateTime.Now;
+            var ahora = ObtenerHoraChile();
             bool esHoraDeRegar = false;
             string mensajeRiego = "";
 
@@ -269,7 +290,7 @@ namespace OrquideasMonitorWeb.Controllers
                     if (hora.Hours == ahora.Hour && hora.Minutes == ahora.Minute)
                     {
                         esHoraDeRegar = true;
-                        mensajeRiego = reader.GetString("Notas");
+                        mensajeRiego = reader.IsDBNull(reader.GetOrdinal("Notas")) ? "" : reader.GetString("Notas");
                         break;
                     }
                 }
